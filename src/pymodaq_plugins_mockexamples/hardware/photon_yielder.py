@@ -25,6 +25,21 @@ class Photons:
     def __len__(self):
         return self.index.shape[0]
 
+    def __iter__(self):
+        self._iter_index = -1
+        return self
+
+    def __next__(self):
+        if self._iter_index < len(self) - 1:
+            self._iter_index += 1
+            return (self.index[self._iter_index],
+                    self.time_stamp[self._iter_index],
+                    self.x_pos[self._iter_index],
+                    self.y_pos[self._iter_index],
+                    self.intensity[self._iter_index],)
+        else:
+            raise StopIteration
+
     def to_positions_intensity(self):
         return np.array([self.x_pos, self.y_pos, self.intensity])
 
