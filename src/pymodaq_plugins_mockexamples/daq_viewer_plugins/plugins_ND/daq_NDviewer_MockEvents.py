@@ -7,16 +7,21 @@ from threading import Lock
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
-from pymodaq.utils.daq_utils import ThreadCommand
-from pymodaq.utils.data import DataFromPlugins, Axis, DataToExport, DataRaw, DataCalculated
-from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, comon_parameters, main
-from pymodaq.utils.parameter import Parameter
-from pymodaq.utils.parameter.pymodaq_ptypes import GroupParameter, registerParameterType
-from pymodaq.utils.parameter.utils import iter_children
-from pymodaq_plugins_mockexamples.hardware.photon_yielder import PhotonYielder, Photons
-from pymodaq.utils.h5modules.saving import H5Saver
-from pymodaq.utils.h5modules.data_saving import (DataEnlargeableSaver, DataToExportEnlargeableSaver, DataLoader,
+from pymodaq.utils.data import (DataFromPlugins, Axis, DataToExport, DataRaw, DataCalculated,
+                                DataDim, DataDistribution)
+
+
+from pymodaq_gui.parameter import Parameter
+from pymodaq_gui.parameter.pymodaq_ptypes import GroupParameter, registerParameterType
+from pymodaq_gui.parameter.utils import iter_children
+from pymodaq_gui.h5modules.saving import H5Saver
+
+from pymodaq_data.h5modules.data_saving import (DataEnlargeableSaver, DataToExportEnlargeableSaver,
+                                                 DataLoader,
                                                  NodeError)
+
+from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, comon_parameters, main
+from pymodaq_plugins_mockexamples.hardware.photon_yielder import PhotonYielder, Photons
 
 lock = Lock()
 
@@ -104,7 +109,7 @@ class DAQ_NDViewer_MockEvents(DAQ_Viewer_base):
 
         self.h5temp : H5Saver() = None
         self.temp_path : tempfile.TemporaryDirectory = None
-        self.saver: DataToExportEnlargeableSaver = None
+        self.saver: DataEnlargeableSaver = None
         self._loader: DataLoader = None
 
         self.saver_thread: QtCore.QThread = None
@@ -184,42 +189,45 @@ class DAQ_NDViewer_MockEvents(DAQ_Viewer_base):
 
     def process_events(self, emit_temp=True):
         try:
-            node = self._loader.get_node('/RawData/myphotons/DataND/CH00/EnlData00')
+            node = self._loader.get_node('/RawData/myphotons/EnlData00')
             lock.acquire()
             dwa = self._loader.load_data(node, load_all=True)
             dwa = dwa.sort_data(0)
-            lock.release()
+
             print(f'Nphotons: {dwa.size}')
             dte = self.compute_histogram(dwa, '1D')
             if emit_temp:
                 self.dte_signal_temp.emit(dte)
             else:
-                dwa.add_extra_attribute(save=True, plot=False)
+                dwa.add_extra_attribute(do_save=True, do_plot=False)
                 dte.append(dwa)
                 self.dte_signal.emit(dte)
-        except NodeError:
+            QtWidgets.QApplication.processEvents()
+            lock.release()
+        except NodeError as e:
             pass
 
     def compute_image_histogram(self, dwa: DataRaw, name: str, time_min: float, time_max: float):
         index_min = dwa.get_axis_from_index(0)[0].find_index(time_min)
         index_max = dwa.get_axis_from_index(0)[0].find_index(time_max)
         dwa_croped = dwa.inav[index_min:index_max]
-        pos_array, x_edges, y_edges = np.histogram2d(dwa_croped[1], dwa_croped[2],
-                                                     bins=(self.settings['histogram', 'nbin_x'],
-                                                           self.settings['histogram', 'nbin_y']),
-                                                     range=((0, self.settings['histogram', 'nbin_x']),
-                                                            (0, self.settings['histogram', 'nbin_y'])),
-                                                     )
+        pos_array, x_edges, y_edges = np.histogram2d(
+            dwa_croped[1], dwa_croped[2],
+            bins=(self.settings['histogram', 'nbin_x'],
+                  self.settings['histogram', 'nbin_y']),
+            range=((0, self.settings['histogram', 'nbin_x']),
+                   (0, self.settings['histogram', 'nbin_y'])),
+        )
         dwa_image = DataFromPlugins(name, data=[pos_array],
                                     axes=[Axis('X', 'pxl', x_edges[:-1], index=0),
                                           Axis('Y', 'pxl', y_edges[:-1], index=1)],
-                                    save=False, plot=True)
+                                    do_save=False, do_plot=True)
         return dwa_image
 
     def compute_histogram(self, dwa: DataRaw, dim='1D') -> DataToExport:
         dte = DataToExport('Histograms', )
         if dim == '1D':
-            time_of_flight, time_array = np.histogram(dwa.axes[0].get_data_0D(),
+            time_of_flight, time_array = np.histogram(dwa.axes[0].get_data(),
                                                       bins=self.settings['histogram', 'nbin_time'],
                                                       range=(self.settings['histogram', 'time_min_tof'] * 1e-6,
                                                              self.settings['histogram', 'time_max_tof'] * 1e-6),
@@ -227,7 +235,7 @@ class DAQ_NDViewer_MockEvents(DAQ_Viewer_base):
                                                       else None)
             dte.append(DataFromPlugins('TOF', data=[time_of_flight],
                                        axes=[Axis('Time', 's', time_array[:-1])],
-                                       save=False, plot=True))
+                                       do_save=False, do_plot=True))
 
             for image_settings in self.settings.child('images_settings').children():
                 dte.append(self.compute_image_histogram(dwa, image_settings['name'],
@@ -235,7 +243,7 @@ class DAQ_NDViewer_MockEvents(DAQ_Viewer_base):
                                                         image_settings['time_max'] * 1e-6))
 
         else:
-            data_array, edges = np.histogramdd(np.stack((dwa.axes[0].get_data_0D(),
+            data_array, edges = np.histogramdd(np.stack((dwa.axes[0].get_data(),
                                                          np.squeeze(dwa[1].astype(int)),
                                                          np.squeeze(dwa[2]).astype(int)), axis=1),
                                                bins=(self.settings['histogram', 'nbin_time'],
@@ -250,12 +258,13 @@ class DAQ_NDViewer_MockEvents(DAQ_Viewer_base):
                                      axes=[Axis('Time', 's', edges[0][:-1], index=0),
                                            Axis('X', 's', edges[1][:-1], index=1),
                                            Axis('Y', 's', edges[2][:-1], index=2)],
-                                     nav_indexes=(1, 2), save=False, plot=True)
+                                     nav_indexes=(1, 2),
+                                     do_save=False, do_plot=True)
             dte.append(dwa_tof)
         return dte
 
     def show_nd(self):
-        node = self._loader.get_node('/RawData/myphotons/DataND/CH00/EnlData00')
+        node = self._loader.get_node('/RawData/myphotons/EnlData00')
         dwa = self._loader.load_data(node, load_all=True)
 
         dte_tof = self.compute_histogram(dwa, 'ND')
@@ -293,9 +302,8 @@ class DAQ_NDViewer_MockEvents(DAQ_Viewer_base):
         addhoc_file_path = Path(self.temp_path.name).joinpath('temp_data.h5')
         self.h5temp.init_file(custom_naming=True, addhoc_file_path=addhoc_file_path)
         self.h5temp.get_set_group('/RawData', 'myphotons')
-        self.saver: DataToExportEnlargeableSaver = DataToExportEnlargeableSaver(self.h5temp,
-                                                                                axis_name='photon index',
-                                                                                axis_units='index')
+        self.saver = DataEnlargeableSaver(
+            self.h5temp, enl_axis_names=('photon time',),  enl_axis_units=('s',))
         self._loader = DataLoader(self.h5temp)
 
         self.controller.ind_grabed = -1
@@ -343,7 +351,7 @@ class PhotonCallback(QtCore.QObject):
 
 
 class SaverCallback(QtCore.QObject):
-    def __init__(self, event_queue: queue.Queue, saver: DataToExportEnlargeableSaver):
+    def __init__(self, event_queue: queue.Queue, saver: DataEnlargeableSaver):
         super().__init__()
         self.event_queue = event_queue
         self.saver = saver
@@ -351,17 +359,22 @@ class SaverCallback(QtCore.QObject):
     def work(self):
         while True:
             photons: Photons = self.event_queue.get()
-            data = DataToExport('photons', data=[
-                DataRaw('time', data=[photons.intensity, photons.x_pos, photons.y_pos],
-                        labels=['intensity', 'x_pos', 'y_pos'],
-                        nav_indexes=(0, ),
-                        axes=[Axis('timestamps', data=photons.time_stamp, index=0)],
-                        plot=False,
-                        save=True
-                        )
-            ])
+
+            data = DataRaw('time', distribution=DataDistribution.uniform,
+                           data=[np.atleast_1d(photons.intensity),
+                                 np.atleast_1d(photons.x_pos),
+                                 np.atleast_1d(photons.y_pos)],
+                           labels=['intensity', 'x_pos', 'y_pos'],
+                           nav_indexes=(0, ),
+                           axes=[Axis('timestamps', units='s', data=photons.time_stamp, index=0)],
+                           do_plot=False,
+                           do_save=True
+                           )
             lock.acquire()
-            self.saver.add_data('/RawData/myphotons', axis_value=photons.time_stamp, data=data)
+            try:
+                self.saver.add_data('/RawData/myphotons', data=data)
+            except Exception as e:
+                print(e)
             lock.release()
             self.event_queue.task_done()
 
