@@ -1,3 +1,5 @@
+from typing import Iterable
+
 from qtpy.QtCore import QThread, Slot, QRectF
 from qtpy import QtWidgets
 import numpy as np
@@ -24,6 +26,9 @@ class DAQ_2DViewer_RoiStuff(DAQ_2DViewer_MockCamera):
     def roi_select(self, roi_info: RoiInfo, ind_viewer: int = 0):
         self.roi_select_info = roi_info
         self.roi_select_viewer_index = ind_viewer
+
+    def crosshair(self, crosshair_info: Iterable[float], ind_viewer: int = 0):
+        print(crosshair_info)
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start a grab from the detector
